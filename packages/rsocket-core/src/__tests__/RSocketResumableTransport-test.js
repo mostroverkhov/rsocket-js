@@ -29,6 +29,7 @@ import {genMockConnection} from 'MockDuplexConnection';
 import {genMockSubscriber} from 'MockFlowableSubscriber';
 import {genMockPublisher} from 'MockFlowableSubscription';
 import {Flowable} from 'rsocket-flowable';
+import {sizeOfFrame} from '../RSocketBinaryFraming';
 
 jest.useFakeTimers();
 
@@ -50,7 +51,7 @@ describe('RSocketResumableTransport', () => {
   beforeEach(() => {
     jest.clearAllTimers();
 
-    bufferSize = 10;
+    bufferSize = 1024;
     resumeToken = '<resumeToken>';
     currentTransport = genMockConnection();
     transportSource = jest.fn(() => currentTransport);
@@ -72,9 +73,9 @@ describe('RSocketResumableTransport', () => {
     };
     requestFrame = {
       type: FRAME_TYPES.REQUEST_FNF,
-      data: {},
+      data: '{}',
       flags: FLAGS.METADATA,
-      metadata: {},
+      metadata: '{}',
       streamId: 1,
     };
     responseFrame = {
@@ -120,7 +121,7 @@ describe('RSocketResumableTransport', () => {
     expect(resumableStatus.kind).toBe('NOT_CONNECTED');
   });
 
-  it('errors for v1.0 setup frames', () => {
+  it('it succeeds for v1.0 setup frames', () => {
     resumableTransport.connect();
     currentTransport.mock.connect();
     expect(resumableStatus.kind).toBe('CONNECTED');
@@ -129,11 +130,7 @@ describe('RSocketResumableTransport', () => {
       majorVersion: 1,
       minorVersion: 0,
     });
-    expect(resumableStatus.kind).toBe('ERROR');
-    expect(resumableStatus.error.message).toBe(
-      'RSocketResumableTransport: Unsupported protocol version 1.0. This ' +
-        'class implements the v1.1 resumption protocol.',
-    );
+    expect(resumableStatus.kind).toBe('CONNECTED');
   });
 
   describe('buffering disabled (bufferSize === 0)', () => {
@@ -154,10 +151,12 @@ describe('RSocketResumableTransport', () => {
       currentTransport.mock.connect();
       resumableTransport.sendOne(setupFrame);
       expect(currentTransport.sendOne.mock.calls.length).toBe(1);
-      expect(currentTransport.sendOne.mock.calls[0][0]).toEqual({
+      let sent = currentTransport.sendOne.mock.calls[0][0];
+      expect(sent).toEqual({
         ...setupFrame,
         flags: FLAGS.RESUME_ENABLE,
         resumeToken,
+        length: sizeOfFrame(sent),
       });
     });
 
@@ -197,10 +196,12 @@ describe('RSocketResumableTransport', () => {
         flags: FLAGS.LEASE,
         resumeToken: null,
       });
-      expect(currentTransport.sendOne.mock.calls[0][0]).toEqual({
+      let sent = currentTransport.sendOne.mock.calls[0][0];
+      expect(sent).toEqual({
         ...setupFrame,
         flags: FLAGS.LEASE | FLAGS.RESUME_ENABLE, // RESUME_ENABLE added
         resumeToken, // added automatically
+        length: sizeOfFrame(sent),
       });
     });
 
@@ -307,11 +308,6 @@ describe('RSocketResumableTransport', () => {
     beforeEach(() => {
       resumableTransport.connect();
       currentTransport.mock.connect();
-    });
-
-    it('on transport CONNECTING it updates to NOT_CONNECTED state', () => {
-      currentTransport.mock.connecting();
-      expect(resumableStatus.kind).toBe('NOT_CONNECTED');
     });
 
     it('on transport CLOSED it updates to NOT_CONNECTED state', () => {
@@ -548,7 +544,7 @@ describe('RSocketResumableTransport', () => {
 
   describe('resumption when client has evicted sent frames from its buffer', () => {
     beforeEach(() => {
-      bufferSize = 2;
+      bufferSize = 25;
       resumableTransport = new RSocketResumableTransport(transportSource, {
         bufferSize,
         resumeToken,
@@ -584,7 +580,7 @@ describe('RSocketResumableTransport', () => {
       expect(currentTransport.sendOne.mock.calls.length).toBe(1);
       expect(currentTransport.sendOne.mock.calls[0][0]).toEqual({
         ...resumeFrame,
-        clientPosition: 1, // first frame (errorFrame) no longer buffered
+        clientPosition: sizeOfFrame(errorFrame), // the byte size of first frame (errorFrame) no longer buffered
         resumeToken,
         serverPosition: 0,
       });
@@ -592,7 +588,7 @@ describe('RSocketResumableTransport', () => {
       expect(resumableStatus.kind).toBe('CONNECTING');
       currentTransport.mock.receiver.onNext({
         ...resumeOkFrame,
-        clientPosition: 1, // server has the evicted frame but nothing else
+        clientPosition: sizeOfFrame(errorFrame), // server has the evicted frame but nothing else
       });
       expect(resumableStatus.kind).toBe('CONNECTED');
       expect(currentTransport.sendOne.mock.calls.length).toBe(2);
@@ -613,7 +609,7 @@ describe('RSocketResumableTransport', () => {
       expect(currentTransport.sendOne.mock.calls.length).toBe(1);
       expect(currentTransport.sendOne.mock.calls[0][0]).toEqual({
         ...resumeFrame,
-        clientPosition: 1, // first frame (errorFrame) no longer buffered
+        clientPosition: sizeOfFrame(errorFrame), // first frame (errorFrame) no longer buffered
         resumeToken,
         serverPosition: 0,
       });
@@ -621,7 +617,7 @@ describe('RSocketResumableTransport', () => {
       expect(resumableStatus.kind).toBe('CONNECTING');
       currentTransport.mock.receiver.onNext({
         ...resumeOkFrame,
-        clientPosition: 2, // server has the first buffered frame, not second
+        clientPosition: sizeOfFrame(errorFrame) + sizeOfFrame(requestFrame), // server has the first buffered frame, not second
       });
       expect(resumableStatus.kind).toBe('CONNECTED');
       expect(currentTransport.sendOne.mock.calls.length).toBe(1);
@@ -641,7 +637,7 @@ describe('RSocketResumableTransport', () => {
       expect(currentTransport.sendOne.mock.calls.length).toBe(1);
       expect(currentTransport.sendOne.mock.calls[0][0]).toEqual({
         ...resumeFrame,
-        clientPosition: 1, // first frame (errorFrame) no longer buffered
+        clientPosition: sizeOfFrame(errorFrame), // first frame (errorFrame) no longer buffered
         resumeToken,
         serverPosition: 0,
       });
@@ -649,7 +645,9 @@ describe('RSocketResumableTransport', () => {
       expect(resumableStatus.kind).toBe('CONNECTING');
       currentTransport.mock.receiver.onNext({
         ...resumeOkFrame,
-        clientPosition: 3, // server has all buffered frames
+        clientPosition: sizeOfFrame(errorFrame) +
+          sizeOfFrame(requestFrame) +
+          sizeOfFrame(responseFrame), // server has all buffered frames (total bytesize)
       });
       expect(resumableStatus.kind).toBe('CONNECTED');
       expect(currentTransport.sendOne.mock.calls.length).toBe(0);
