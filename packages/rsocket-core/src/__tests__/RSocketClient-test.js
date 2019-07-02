@@ -1091,8 +1091,14 @@ describe('RSocketClient', () => {
       });
 
       it('closes the socket and transport if already connected', () => {
+        console.log(
+          `****** closes the socket and transport if already connected start *****`,
+        );
         transport.mock.connect();
         client.close();
+        console.log(
+          `****** closes the socket and transport if already connected end *****`,
+        );
         jest.runAllTimers();
         expect(transport.close).toBeCalled();
         expect(status.kind).toBe('CLOSED');

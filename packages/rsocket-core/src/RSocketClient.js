@@ -45,6 +45,7 @@ export type ClientConfig<D, M> = {|
   |},
   transport: DuplexConnection,
   responder?: Responder<D, M>,
+  errorHandler?: (Error) => void,
   leases?: () => Leases<*>,
 |};
 
@@ -129,11 +130,15 @@ class RSocketClientSocket<D, M> implements ReactiveSocket<D, M> {
         lease._stats,
       );
     }
+    const {keepAlive, lifetime} = config.setup;
+
     this._machine = createClientMachine(
       connection,
       subscriber => connection.receive().subscribe(subscriber),
       config.serializers,
       config.responder,
+      config.errorHandler,
+      lifetime,
       requesterLeaseHandler,
       responderLeaseHandler,
     );
@@ -142,7 +147,6 @@ class RSocketClientSocket<D, M> implements ReactiveSocket<D, M> {
     connection.sendOne(this._buildSetupFrame(config));
 
     // Send KEEPALIVE frames
-    const {keepAlive} = config.setup;
     const keepAliveFrames = every(keepAlive).map(() => ({
       data: null,
       flags: FLAGS.RESPOND,
